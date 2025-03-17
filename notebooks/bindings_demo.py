@@ -48,13 +48,15 @@
 #     name: python3
 # ---
 
-# %%
+# %% bindings.demo.py
 import spark_dsg as dsg
 import pathlib
 
 
 # %%
-path_to_dsg = "~/uh2_office_dsg.json"
+path_to_dsg = "~/Downloads/spot_building45_gadget.json"
+# path_to_dsg = "~/Downloads/example_dsg_for_jared.json"
+# path_to_dsg = "~/Downloads/t3_w0_ths2_fused.json"
 path_to_dsg = pathlib.Path(path_to_dsg).expanduser().absolute()
 
 
@@ -63,7 +65,7 @@ G = dsg.DynamicSceneGraph.load(str(path_to_dsg))
 
 
 # %%
-fig = dsg.plot_scene_graph(G, marker_size=6)
+fig = dsg.plot_scene_graph(G)
 if fig is not None:
     fig.show(renderer="notebook")
 

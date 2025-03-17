@@ -37,9 +37,9 @@ import numpy as np
 import logging
 
 # DSG plot style
-NODE_TYPE_OFFSET = {"B": 30, "R": 25, "p": 10, "O": 0}
+NODE_TYPE_OFFSET = {"B": 30, "R": 25, "p": 10, "O": 0, "P": 15, "f": 0, "l": 0}
 
-NODE_TYPE_TO_COLOR = {"B": "#636EFA", "R": "#EF553B", "p": "#AB63FA", "O": "#00CC96"}
+NODE_TYPE_TO_COLOR = {"B": "#636EFA", "R": "#EF553B", "p": "#AB63FA", "O": "#00CC96", "P": "#E663FA", "f": "#E663FA", "l": "#996246"}
 
 
 def z_offset(node) -> np.ndarray:
