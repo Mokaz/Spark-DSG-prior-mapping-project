@@ -11,21 +11,27 @@ np.random.seed(14)
 # Load the Scene Graph and Remove Nodes
 # =============================================================================
 path_to_dsg = "example_dsg_for_jared.json"
+# path_to_dsg = "spot_building45_gadget.json"
+# path_to_dsg = "t3_w0_ths2_fused.json"
+# path_to_dsg = "apartment_dsg.json"
+# path_to_dsg = "out_dsg.json"
+
+
 G = dsg.DynamicSceneGraph.load(path_to_dsg)
 
-########## Remove Some Object Nodes
-object_layer = G.get_layer(dsg.DsgLayers.OBJECTS)
-object_nodes = list(object_layer.nodes)
-nodes_to_remove = object_nodes[:3] + object_nodes[-3:]
-for node in nodes_to_remove:
-    G.remove_node(node.id.value)
+# ########## Remove Some Object Nodes
+# object_layer = G.get_layer(dsg.DsgLayers.OBJECTS)
+# object_nodes = list(object_layer.nodes)
+# nodes_to_remove = object_nodes[:3] + object_nodes[-3:]
+# for node in nodes_to_remove:
+#     G.remove_node(node.id.value)
 
-############# Remove Some Agent Nodes
-agent_layer = G.get_dynamic_layer(dsg.DsgLayers.AGENTS, "a")
-agent_nodes = list(agent_layer.nodes)
-nodes_to_remove = agent_nodes[:300] + agent_nodes[-100:]
-for node in nodes_to_remove:
-    G.remove_node(node.id.value)
+# ############# Remove Some Agent Nodes
+# agent_layer = G.get_dynamic_layer(dsg.DsgLayers.AGENTS, "a")
+# agent_nodes = list(agent_layer.nodes)
+# nodes_to_remove = agent_nodes[:300] + agent_nodes[-100:]
+# for node in nodes_to_remove:
+#     G.remove_node(node.id.value)
 
 # =============================================================================
 # Step 2: Extract Original (Prior) Data
@@ -34,6 +40,9 @@ for node in nodes_to_remove:
 agent_layer = G.get_dynamic_layer(dsg.DsgLayers.AGENTS, "a")
 agent_trajectories = []
 for agent in agent_layer.nodes:
+    print(agent)
+    print(dir(agent.attributes))
+    print(type(agent))
     timestamp = agent.timestamp
     pos = agent.attributes.position if hasattr(agent.attributes, "position") else None
     R_body = agent.attributes.world_R_body
@@ -45,6 +54,8 @@ for agent in agent_layer.nodes:
         "position": pos,
         "orientation": R_body
     })
+
+exit()
 
 # Extract Object Data
 objects_data = []
@@ -88,15 +99,6 @@ for obj in objects_data:
                 "agent_position": agent_pos
             }
             measurement_edges.append(edge)
-
-# For visualization
-agent_x = [a["position"][0] for a in agent_trajectories if a["position"] is not None]
-agent_y = [a["position"][1] for a in agent_trajectories if a["position"] is not None]
-agent_z = [a["position"][2] for a in agent_trajectories if a["position"] is not None]
-
-object_x = [o["position"][0] for o in objects_data if o["position"] is not None]
-object_y = [o["position"][1] for o in objects_data if o["position"] is not None]
-object_z = [o["position"][2] for o in objects_data if o["position"] is not None]
 
 # =============================================================================
 # Step 4: Define Helper Functions to Add Noise and Simulate Cumulative Drift
@@ -253,6 +255,15 @@ for j, point in enumerate(optimized_landmark_positions):
 # =============================================================================
 # (Optional) Visualization of Priors and Optimized Results
 # =============================================================================
+
+agent_x = [a["position"][0] for a in agent_trajectories if a["position"] is not None]
+agent_y = [a["position"][1] for a in agent_trajectories if a["position"] is not None]
+agent_z = [a["position"][2] for a in agent_trajectories if a["position"] is not None]
+
+object_x = [o["position"][0] for o in objects_data if o["position"] is not None]
+object_y = [o["position"][1] for o in objects_data if o["position"] is not None]
+object_z = [o["position"][2] for o in objects_data if o["position"] is not None]
+
 fig = plt.figure(figsize=(10, 8))
 ax = fig.add_subplot(111, projection='3d')
 
