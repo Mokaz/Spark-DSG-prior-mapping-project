@@ -23,15 +23,15 @@ G = dsg.DynamicSceneGraph.load(path_to_dsg)
 # object_layer = G.get_layer(dsg.DsgLayers.OBJECTS)
 # object_nodes = list(object_layer.nodes)
 # nodes_to_remove = object_nodes[:3] + object_nodes[-3:]
-# for node in nodes_to_remove:
-#     G.remove_node(node.id.value)
+# for obj in nodes_to_remove:
+#     G.remove_node(obj.id.value)
 
 # ############# Remove Some Agent Nodes
 # agent_layer = G.get_dynamic_layer(dsg.DsgLayers.AGENTS, "a")
 # agent_nodes = list(agent_layer.nodes)
 # nodes_to_remove = agent_nodes[:300] + agent_nodes[-100:]
-# for node in nodes_to_remove:
-#     G.remove_node(node.id.value)
+# for obj in nodes_to_remove:
+#     G.remove_node(obj.id.value)
 
 # =============================================================================
 # Step 2: Extract Original (Prior) Data
@@ -59,8 +59,8 @@ for obj in object_layer.nodes:
     pos = obj.attributes.position if hasattr(obj.attributes, "position") else None
     R_object = obj.attributes.world_R_object if hasattr(obj.attributes, "world_R_object") else None
     bounding_box = obj.attributes.bounding_box if hasattr(obj.attributes, "bounding_box") else None
-    traj_positions = obj.attributes.trajectory_positions if hasattr(obj.attributes, "trajectory_positions") else None
-    traj_timestamps = obj.attributes.trajectory_timestamps if hasattr(obj.attributes, "trajectory_timestamps") else None
+    semantic_label = obj.attributes.semantic_label if hasattr(obj.attributes, "semantic_label") else None
+    semantic_feature = obj.attributes.semantic_feature if hasattr(obj.attributes, "semantic_feature") else None
     if pos is not None:
         pos = np.array(pos).flatten()
     objects_data.append({
@@ -68,8 +68,8 @@ for obj in object_layer.nodes:
         "position": pos,
         "orientation": R_object,
         "bounding_box": bounding_box,
-        "trajectory_positions": traj_positions,
-        "trajectory_timestamps": traj_timestamps
+        "semantic_label": semantic_label,
+        "semantic_feature": semantic_feature,
     })
 
 # =============================================================================

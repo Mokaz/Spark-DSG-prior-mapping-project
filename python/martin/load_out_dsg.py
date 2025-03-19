@@ -44,7 +44,6 @@ for node in objects_and_agents_layer.nodes:
         pos = node.attributes.position if hasattr(node.attributes, "position") else None
         R_object = node.attributes.world_R_object if hasattr(node.attributes, "world_R_object") else None
         bounding_box = node.attributes.bounding_box if hasattr(node.attributes, "bounding_box") else None
-        traj_positions = node.attributes.trajectory_positions if hasattr(node.attributes, "trajectory_positions") else None
         semantic_label = node.attributes.semantic_label if hasattr(node.attributes, "semantic_label") else None
         semantic_feature = node.attributes.semantic_feature if hasattr(node.attributes, "semantic_feature") else None
         if pos is not None:
