@@ -16,7 +16,6 @@ np.random.seed(14)
 # path_to_dsg = "apartment_dsg.json"
 path_to_dsg = "out_dsg.json"
 
-
 G = dsg.DynamicSceneGraph.load(path_to_dsg)
 
 # ########## Remove Some Object Nodes
@@ -100,19 +99,6 @@ for obj in objects_data:
 # =============================================================================
 # Step 4: Define Helper Functions to Add Noise and Simulate Cumulative Drift
 # =============================================================================
-def perturb_quaternion(q, noise_std):
-    w, x, y, z = q.w, q.x, q.y, q.z
-    angle = 2 * np.arccos(w)
-    sin_half_angle = np.sqrt(max(0, 1 - w*w))
-    if sin_half_angle < 1e-6:
-        axis = np.array([1, 0, 0])
-    else:
-        axis = np.array([x, y, z]) / sin_half_angle
-    delta_angle = np.random.normal(0, noise_std)
-    new_angle = angle + delta_angle
-    new_w = np.cos(new_angle/2)
-    new_xyz = axis * np.sin(new_angle/2)
-    return type(q)(new_w, new_xyz[0], new_xyz[1], new_xyz[2])
 
 def add_cumulative_drift_to_agents(agent_list, drift_std=0.05, alpha=0.9):
     noisy_agents = []
@@ -127,14 +113,18 @@ def add_cumulative_drift_to_agents(agent_list, drift_std=0.05, alpha=0.9):
         noisy_agents.append(noisy_agent)
     return noisy_agents
 
-def add_drift_and_noise_to_objects(objects, global_drift, measurement_noise_std=0.05):
-    noisy_objects = []
-    for obj in objects:
-        noisy_obj = obj.copy()
-        if noisy_obj["position"] is not None:
-            noisy_obj["position"] = noisy_obj["position"] + global_drift + np.random.normal(0, measurement_noise_std, 3)
-        noisy_objects.append(noisy_obj)
-    return noisy_objects
+def generate_measurement_noise_perturbation(trans_std=0.1, rot_std=0.05):
+    # Generate random noise for translation (3D vector)
+    trans_noise = np.random.normal(0, trans_std, 3)
+
+    # Generate random noise for rotation.
+    # Create a small rotation using the exponential map from a rotation vector.
+    rot_noise_vec = np.random.normal(0, rot_std, 3)
+    rot_noise = gtsam.Rot3.Expmap(rot_noise_vec)
+
+    # Create a noise pose from the rotation and translation noise.
+    noise_pose = Pose3(rot_noise, Point3(trans_noise[0], trans_noise[1], trans_noise[2]))
+    return noise_pose
 
 # =============================================================================
 # Step 5: Create Noisy Copies and Measurement Edges for Noisy Data
@@ -207,17 +197,25 @@ for edge in measurement_edges:
                              Point3(agent["position"][0],
                                     agent["position"][1],
                                     agent["position"][2]))
-    # Construct Pose3 for the landmark.
     object = next((o for o in objects_data if o["id"] == edge["object_id"]), None)
     if object is None:
         continue
-    # Assume the landmark has identity rotation.
-    landmark_pose_noisy = Pose3(Rot3(), Point3(object["position"][0],
+
+    # Construct Pose3 for the landmark.
+    q_o = object["orientation"]
+    landmark_pose = Pose3(Rot3.Quaternion(q_o.w, q_o.x, q_o.y, q_o.z), 
+                                        Point3(object["position"][0],
                                                object["position"][1],
                                                object["position"][2]))
     # Compute the relative measurement: T_agent^{-1} * T_landmark.
-    relative_measurement = agent_pose.between(landmark_pose_noisy) # TODO: Add noise to this measurement.
-    graph.add(gtsam.BetweenFactorPose3(key_agent, key_landmark, relative_measurement, relative_noise))
+    relative_measurement = agent_pose.between(landmark_pose)
+
+    # Add noise to the relative measurement.
+    noise_pose = generate_measurement_noise_perturbation(trans_std=0.1, rot_std=0.05)
+    noisy_relative_measurement = relative_measurement.compose(noise_pose)
+
+    # Add the factor to the graph.
+    graph.add(gtsam.BetweenFactorPose3(key_agent, key_landmark, noisy_relative_measurement, relative_noise))
 
 # Add prior factors for landmarks using the original objects_data.
 prior_noise = noiseModel.Isotropic.Sigma(6, 0.1)  # 6-dim noise.
@@ -281,16 +279,6 @@ noisy_agent_z = [a["position"][2] for a in noisy_agent_trajectories if a["positi
 
 # Plot noisy agent and object positions (cyan and magenta, respectively).
 ax.plot(noisy_agent_x, noisy_agent_y, noisy_agent_z, marker='o', color='cyan', label='Noisy Agent (Drifted)')
-# ax.scatter(noisy_object_x, noisy_object_y, noisy_object_z, marker='s', color='magenta', s=80, label='Noisy Object (Drift+Noise)')
-
-# Plot noisy measurement edges as orange dotted lines.
-# for edge in noisy_measurement_edges:
-#     p_obj = edge["object_position"]
-#     p_agent = edge["agent_position"]
-#     ax.plot([p_obj[0], p_agent[0]],
-#             [p_obj[1], p_agent[1]],
-#             [p_obj[2], p_agent[2]],
-#             color='orange', linestyle=':', linewidth=1)
 
 # Draw bounding boxes for original objects (optional)
 for obj in objects_data:
@@ -369,13 +357,8 @@ noisy_agent_x = [a["position"][0] for a in noisy_agent_trajectories if a["positi
 noisy_agent_y = [a["position"][1] for a in noisy_agent_trajectories if a["position"] is not None]
 noisy_agent_z = [a["position"][2] for a in noisy_agent_trajectories if a["position"] is not None]
 
-# noisy_object_x = [o["position"][0] for o in noisy_objects_data if o["position"] is not None]
-# noisy_object_y = [o["position"][1] for o in noisy_objects_data if o["position"] is not None]
-# noisy_object_z = [o["position"][2] for o in noisy_objects_data if o["position"] is not None]
-
 # Plot noisy agent and object positions (cyan and magenta, respectively).
 ax.plot(noisy_agent_x, noisy_agent_y, noisy_agent_z, marker='o', color='cyan', label='Noisy Agent (Drifted)')
-# ax.scatter(noisy_object_x, noisy_object_y, noisy_object_z, marker='s', color='magenta', s=80, label='Noisy Object (Drift+Noise)')
 
 # Plot optimized agent trajectory (green) and optimized landmark positions (yellow)
 opt_agent_x = [pose.translation()[0] for pose in optimized_agent_poses]
@@ -395,11 +378,3 @@ ax.set_title("Landmark SLAM Optimization Result")
 ax.legend()
 ax.grid(True)
 plt.show()
-
-# =============================================================================
-# (Optional) Visualize the Factor Graph by exporting it in DOT format.
-# =============================================================================
-# dot_str = graph.dot()
-# with open("factor_graph.dot", "w") as f:
-#     f.write(dot_str)
-# print("Factor graph DOT file written to 'factor_graph.dot'.")
