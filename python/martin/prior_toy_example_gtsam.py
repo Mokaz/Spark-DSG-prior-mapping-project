@@ -4,18 +4,22 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import gtsam
 from gtsam import Pose3, Rot3, Point3, symbol, NonlinearFactorGraph, Values, noiseModel
+import os
 
 np.random.seed(14)
 
 # =============================================================================
 # Load the Scene Graph and Remove Nodes
 # =============================================================================
-path_to_dsg = "example_dsg_for_jared.json"
-# path_to_dsg = "spot_building45_gadget.json"
-# path_to_dsg = "t3_w0_ths2_fused.json"
-# path_to_dsg = "apartment_dsg.json"
-# path_to_dsg = "out_dsg.json"
+data_folder = "scene_graphs"
 
+filename = "example_dsg_for_jared.json"
+# filename = "spot_building45_gadget.json"
+# filename = "t3_w0_ths2_fused.json"
+# filename = "apartment_dsg.json"
+# filename = "out_dsg.json"
+
+path_to_dsg = os.path.join(data_folder, filename)
 
 G = dsg.DynamicSceneGraph.load(path_to_dsg)
 
@@ -99,19 +103,6 @@ for obj in objects_data:
 # =============================================================================
 # Step 4: Define Helper Functions to Add Noise and Simulate Cumulative Drift
 # =============================================================================
-def perturb_quaternion(q, noise_std):
-    w, x, y, z = q.w, q.x, q.y, q.z
-    angle = 2 * np.arccos(w)
-    sin_half_angle = np.sqrt(max(0, 1 - w*w))
-    if sin_half_angle < 1e-6:
-        axis = np.array([1, 0, 0])
-    else:
-        axis = np.array([x, y, z]) / sin_half_angle
-    delta_angle = np.random.normal(0, noise_std)
-    new_angle = angle + delta_angle
-    new_w = np.cos(new_angle/2)
-    new_xyz = axis * np.sin(new_angle/2)
-    return type(q)(new_w, new_xyz[0], new_xyz[1], new_xyz[2])
 
 def add_cumulative_drift_to_agents(agent_list, drift_std=0.05, alpha=0.9):
     noisy_agents = []
@@ -126,15 +117,6 @@ def add_cumulative_drift_to_agents(agent_list, drift_std=0.05, alpha=0.9):
         noisy_agent["position"] = agent["position"] + drift_offset
         noisy_agents.append(noisy_agent)
     return noisy_agents
-
-def add_drift_and_noise_to_objects(objects, global_drift, measurement_noise_std=0.05):
-    noisy_objects = []
-    for obj in objects:
-        noisy_obj = obj.copy()
-        if noisy_obj["position"] is not None:
-            noisy_obj["position"] = noisy_obj["position"] + global_drift + np.random.normal(0, measurement_noise_std, 3)
-        noisy_objects.append(noisy_obj)
-    return noisy_objects
 
 def generate_measurement_noise_perturbation(trans_std=0.1, rot_std=0.05):
     # Generate random noise for translation (3D vector)
@@ -223,9 +205,6 @@ for edge in measurement_edges:
     object = next((o for o in objects_data if o["id"] == edge["object_id"]), None)
     if object is None:
         continue
-
-    trans_std = 0.1  # translation noise standard deviation
-    rot_std = 0.05   # rotation noise standard deviation (in radians)
 
     # Construct Pose3 for the landmark.
     q_o = object["orientation"]

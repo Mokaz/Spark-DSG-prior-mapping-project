@@ -5,16 +5,16 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import gtsam
 from gtsam import Pose3, Rot3, Point3, symbol, NonlinearFactorGraph, Values, noiseModel
 
+import os 
+
 np.random.seed(14)
+
 
 # =============================================================================
 # Load the Scene Graph and Remove Nodes
 # =============================================================================
-# path_to_dsg = "example_dsg_for_jared.json"
-# path_to_dsg = "spot_building45_gadget.json"
-# path_to_dsg = "t3_w0_ths2_fused.json"
-# path_to_dsg = "apartment_dsg.json"
-path_to_dsg = "out_dsg.json"
+data_folder = "scene_graphs"
+path_to_dsg = os.path.join(data_folder, "out_dsg.json")
 
 G = dsg.DynamicSceneGraph.load(path_to_dsg)
 
