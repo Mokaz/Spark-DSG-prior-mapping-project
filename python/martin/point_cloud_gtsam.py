@@ -32,7 +32,7 @@ for obj in nodes_to_remove:
     G.remove_node(obj.id.value)
 
 # =============================================================================
-# Step 2: Extract Original (Prior) Data
+# Extract Original (Prior) Data
 # =============================================================================
 # Extract Agent Data
 agent_layer = G.get_dynamic_layer(dsg.DsgLayers.AGENTS, "a")
@@ -165,7 +165,7 @@ for obj in objects_data:
         # o3d.visualization.draw_geometries([pcd])
 
 # =============================================================================
-# Step 3: Create Measurement Edges between Original (Prior) Agents and Object Centroids
+# Create Measurement Edges between Original (Prior) Agents and Object Centroids
 # =============================================================================
 radius_threshold = 5
 gt_measurement_edges = []
@@ -189,7 +189,7 @@ for obj in objects_data:
             gt_measurement_edges.append(edge)
 
 # =============================================================================
-# Step 4: Define Helper Functions to Add Noise and Simulate Cumulative Drift
+# Define Helper Functions to Add Noise and Simulate Cumulative Drift
 # =============================================================================
 
 def add_cumulative_drift_to_agents(agent_list, drift_std=0.05, alpha=0.9):
@@ -220,12 +220,12 @@ def generate_measurement_noise_perturbation(trans_std=0.1, rot_std=0.05):
     return noise_pose
 
 # =============================================================================
-# Step 5: Create Noisy Copies and Measurement Edges for Noisy Data
+# Create Noisy Copies and Measurement Edges for Noisy Data
 # =============================================================================
 noisy_agent_trajectories = add_cumulative_drift_to_agents(agent_trajectories, drift_std=0.05, alpha=0.9)
 
 # =============================================================================
-# Step 5.5: Place Noisy Objects in the Scene ("Hydra Frame")
+# Place Noisy Objects in the Scene ("Hydra Frame")
 # =============================================================================
 noisy_objects_data = []
 
@@ -261,7 +261,7 @@ for obj_id, edges in grouped_edges.items():
     })
 
 # =============================================================================
-# Step 5.7: Perform ICP Registration to Align Noisy Objects with Prior Objects
+# Perform ICP Registration to Align Noisy Objects with Prior Objects
 # =============================================================================
 def register_icp(source_pcd, target_pcd, threshold=0.5, trans_init=np.eye(4)):
     reg = o3d.pipelines.registration.registration_icp(
@@ -286,8 +286,8 @@ for noisy_obj in noisy_objects_data:
 
     # o3d.visualization.draw_geometries([source, target])
     
-    # Set an ICP threshold (adjust as needed).
-    threshold = 0.05
+    # Set an ICP threshold
+    threshold = 1.0
     trans_init = np.eye(4)
     reg_result = register_icp(source, target, threshold, trans_init)
     
@@ -301,10 +301,12 @@ for noisy_obj in noisy_objects_data:
     source.transform(reg_result.transformation)
 
     # Visualize the aligned point clouds.
-    # o3d.visualization.draw_geometries([source, target])
+    o3d.visualization.draw_geometries([source, target])
+
+exit()
 
 # =============================================================================
-# Step 6: Build a GTSAM Factor Graph
+# Build a GTSAM Factor Graph
 # =============================================================================
 graph = NonlinearFactorGraph()
 initial_estimates = Values()
@@ -398,7 +400,7 @@ for j, obj in enumerate(objects_data):
     graph.add(gtsam.PriorFactorPose3(key, prior, prior_noise))
 
 # =============================================================================
-# Step 7: Optimize the Factor Graph
+# Optimize the Factor Graph
 # =============================================================================
 params = gtsam.LevenbergMarquardtParams()
 params.setVerbosityLM("SUMMARY")
@@ -418,7 +420,7 @@ for j, point in enumerate(optimized_landmark_positions):
     print(f"Landmark {j}: {point}")
 
 # =============================================================================
-# (Optional) Visualization of Priors and Optimized Results
+# Visualization of Priors and Optimized Results
 # =============================================================================
 
 agent_x = [a["position"][0] for a in agent_trajectories if a["position"] is not None]
