@@ -303,8 +303,6 @@ for noisy_obj in noisy_objects_data:
     # Visualize the aligned point clouds.
     o3d.visualization.draw_geometries([source, target])
 
-exit()
-
 # =============================================================================
 # Build a GTSAM Factor Graph
 # =============================================================================
