@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.linalg import expm
+from mpl_toolkits.mplot3d import Axes3D
 
 def randlangevin(mode, kappa):
     """
@@ -42,7 +43,39 @@ def randlangevin(mode, kappa):
 if __name__ == "__main__":
     # Define a mode rotation matrix (for instance, the identity matrix)
     mode = np.eye(3)
-    kappa = 5.0  # example concentration parameter
+    kappa = 50.0  # example concentration parameter
     R_sample = randlangevin(mode, kappa)
     print("Random rotation sample from the Langevin distribution:")
     print(R_sample)
+
+    import matplotlib.pyplot as plt
+
+    # Create a 3D plot to visualize the camera frames.
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Define origins and colors for each axis
+    origin = [0, 0, 0]
+    colors = ['r', 'g', 'b']
+
+    # Plot the original (mode) coordinate frame with solid lines
+    for i, color in enumerate(colors):
+        ax.quiver(origin[0], origin[1], origin[2],
+                  mode[0, i], mode[1, i], mode[2, i],
+                  color=color, arrow_length_ratio=0.1, label=f"Original axis {i+1}")
+
+    # Plot the noisy (R_sample) coordinate frame with dashed lines
+    for i, color in enumerate(colors):
+        ax.quiver(origin[0], origin[1], origin[2],
+                  R_sample[0, i], R_sample[1, i], R_sample[2, i],
+                  color=color, linestyle='dashed', arrow_length_ratio=0.1, label=f"Noisy axis {i+1}")
+
+    ax.set_xlim([-1, 1])
+    ax.set_ylim([-1, 1])
+    ax.set_zlim([-1, 1])
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_title("Original (solid) vs Noisy (dashed) Rotation Frames")
+    ax.legend()
+    plt.show()
