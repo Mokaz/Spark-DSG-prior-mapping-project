@@ -7,6 +7,7 @@ from gtsam import Pose3, Rot3, Point3, symbol, NonlinearFactorGraph, Values, noi
 import os
 import open3d as o3d
 from collections import defaultdict
+from scipy.linalg import expm
 import copy
 
 np.random.seed(14)
@@ -27,7 +28,7 @@ G = dsg.DynamicSceneGraph.load(path_to_dsg)
 # ########## Remove Some Object Nodes
 object_layer = G.get_layer(dsg.DsgLayers.OBJECTS)
 object_nodes = list(object_layer.nodes)
-nodes_to_remove = object_nodes[:2] + object_nodes[-3:]
+nodes_to_remove = object_nodes[:2] + object_nodes[-4:]
 for obj in nodes_to_remove:
     G.remove_node(obj.id.value)
 
@@ -61,11 +62,17 @@ for obj in object_layer.nodes:
     semantic_feature = obj.attributes.semantic_feature if hasattr(obj.attributes, "semantic_feature") else None
     if pos is not None:
         pos = np.array(pos).flatten()
+    if bounding_box is not None:
+        bbox = {}
+        bbox["pos"] = np.array(bounding_box.world_P_center).flatten()
+        bbox["dim"] = np.array(bounding_box.dimensions).flatten()
+        bbox["min"] = np.array(bounding_box.min).flatten()
+        bbox["max"] = np.array(bounding_box.max).flatten()
     objects_data.append({
         "id": obj.id,
         "position": pos,
         "orientation": R_object,
-        "bounding_box": bounding_box,
+        "bounding_box": bbox,
         "semantic_label": semantic_label,
         "semantic_feature": semantic_feature,
     })
@@ -75,8 +82,8 @@ def generate_point_cloud_from_bbox(bbox, n_points=500):
     if bbox is None:
         return None
 
-    bb_min = np.array(bbox.min).flatten()
-    bb_max = np.array(bbox.max).flatten()
+    bb_min = bbox["min"]
+    bb_max = bbox["max"]
     center = (bb_min + bb_max) / 2.0
     dims = bb_max - bb_min
 
@@ -93,22 +100,11 @@ def generate_point_cloud_from_bbox(bbox, n_points=500):
     return pcd
 
 def generate_point_cloud_from_bbox_by_resolution(bbox, resolution=0.01):
-    """
-    Generate a point cloud from a bounding box using a uniform grid defined by resolution.
-    
-    Parameters:
-      bbox: Either a dictionary with keys "pos" (center, as [x, y, z]) and "dim" (dimensions, as [width, height, depth]),
-            or an instance of a BoundingBox class with properties 'min' and 'max'.
-      resolution (float): Approximate spacing between points.
-      
-    Returns:
-      pcd (open3d.geometry.PointCloud): The generated point cloud.
-    """
     if bbox is None:
         return None
 
-    bb_min = np.array(bbox.min).flatten()
-    bb_max = np.array(bbox.max).flatten()
+    bb_min = bbox["min"]
+    bb_max = bbox["max"]
 
     # For each axis, determine a grid using linspace.
     def grid_points(min_val, max_val, res):
@@ -150,12 +146,45 @@ def generate_point_cloud_from_bbox_by_resolution(bbox, resolution=0.01):
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(unique_points)
     return pcd
+    
+def load_bunny_pcd(bbox):
+    # Load the Stanford Bunny mesh from Open3D's built-in data.
+    bunny_data = o3d.data.BunnyMesh()
+    mesh = o3d.io.read_triangle_mesh(bunny_data.path)
+    mesh.compute_vertex_normals()
+
+    # Sample points from the mesh.
+    bunny_pcd = mesh.sample_points_uniformly(number_of_points=3000)
+    
+    # Compute the bunny's current axis-aligned bounding box.
+    bunny_bbox = bunny_pcd.get_axis_aligned_bounding_box()
+    bunny_center = bunny_bbox.get_center()
+    bunny_dims = bunny_bbox.get_max_bound() - bunny_bbox.get_min_bound()
+    
+    # Extract the target bounding box from the provided bbox.
+    target_bb_min = bbox["min"]
+    target_bb_max = bbox["max"]
+    target_center = (target_bb_min + target_bb_max) / 2.0
+    target_dims = target_bb_max - target_bb_min
+    
+    # Compute scale factor so bunny fits inside the target bounding box.
+    scale_factors = target_dims / bunny_dims
+    scale = np.min(scale_factors)
+    
+    # Scale bunny with respect to its center.
+    bunny_pcd.scale(scale, center=bunny_center)
+    
+    # Translate bunny's center to the target bounding box center.
+    bunny_pcd.translate(target_center - bunny_center)
+    
+    return bunny_pcd
 
 # Example: generate point clouds for all objects with bounding boxes in your objects_data list.
 for obj in objects_data:
     bbox = obj.get("bounding_box", None)
     # pcd = generate_point_cloud_from_bbox(bbox, n_points=1000)
-    pcd = generate_point_cloud_from_bbox_by_resolution(bbox, resolution=0.1)
+    # pcd = generate_point_cloud_from_bbox_by_resolution(bbox, resolution=0.1)
+    pcd = load_bunny_pcd(bbox)
     obj["pcd"] = pcd
     if pcd is not None:
         points = np.asarray(pcd.points)
@@ -167,7 +196,7 @@ for obj in objects_data:
 # =============================================================================
 # Create Measurement Edges between Original (Prior) Agents and Object Centroids
 # =============================================================================
-radius_threshold = 5
+radius_threshold = 6
 gt_measurement_edges = []
 for obj in objects_data:
     obj_centroid = obj["centroid"]
@@ -179,18 +208,65 @@ for obj in objects_data:
             continue
         distance = np.linalg.norm(obj_centroid - agent_pos)
         if distance <= radius_threshold:
+            R_agent = gtsam.Rot3.Quaternion(
+                agent["orientation"].w,
+                agent["orientation"].x,
+                agent["orientation"].y,
+                agent["orientation"].z).matrix()
+    
             edge = {
                 "object_id": obj["id"],
                 "agent_id": agent["id"],
                 "distance": distance,
                 "object_position": obj_centroid,
-                "agent_position": agent_pos
+                "agent_position": agent_pos,
+                "agent_orientation": agent["orientation"],
+                "agent_orientation_matrix": R_agent,
+                "object_orientation": obj["orientation"],
             }
             gt_measurement_edges.append(edge)
 
 # =============================================================================
 # Define Helper Functions to Add Noise and Simulate Cumulative Drift
 # =============================================================================
+
+def randlangevin(mode, kappa):
+    """
+    Sample from the Langevin distribution in SO(3) with a given mode and concentration parameter.
+    
+    Parameters:
+    -----------
+    mode : array_like, shape (3, 3)
+        The mode rotation matrix.
+    kappa : float
+        The concentration parameter. If kappa <= 0, the function returns the identity matrix.
+        
+    Returns:
+    --------
+    Re : ndarray, shape (3, 3)
+        A random rotation matrix sampled from the Langevin distribution.
+    """
+    if kappa <= 0:
+        return np.eye(3)
+    
+    # 1) Sample theta from the von Mises distribution
+    theta = np.random.vonmises(0, 2 * kappa)
+    
+    # 2) Sample an axis of rotation uniformly from the sphere.
+    axis = np.random.randn(3)
+    axis = axis / np.linalg.norm(axis)
+    
+    # 3) Construct the skew-symmetric matrix corresponding to the rotation axis.
+    axis_skew = np.array([[0,         -axis[2],  axis[1]],
+                          [axis[2],    0,       -axis[0]],
+                          [-axis[1],   axis[0],  0]])
+    
+    # Compute the rotation matrix P via the matrix exponential.
+    P = expm(theta * axis_skew)
+    
+    # Multiply the mode by the perturbation P.
+    Re = mode @ P
+    return Re
 
 def add_cumulative_drift_to_agents(agent_list, drift_std=0.05, alpha=0.9):
     noisy_agents = []
@@ -204,6 +280,50 @@ def add_cumulative_drift_to_agents(agent_list, drift_std=0.05, alpha=0.9):
         noisy_agent = agent.copy()
         noisy_agent["position"] = agent["position"] + drift_offset
         noisy_agents.append(noisy_agent)
+    return noisy_agents
+
+def add_orientation_langevin_noise_to_agents(agent_list, kappa):
+    noisy_agents = []
+    for agent in agent_list:
+        noisy_agent = agent.copy()
+        # Generate Langevin noise for the orientation.
+        mode = agent["orientation"] # Quaternion
+        mode = gtsam.Rot3.Quaternion(mode.w, mode.x, mode.y, mode.z).matrix()
+        noisy_orientation = randlangevin(mode, kappa)
+        noisy_agent["orientation_matrix"] = noisy_orientation # Matrix 
+        noisy_agents.append(noisy_agent)
+
+        viz = False
+        if viz:
+            # Create a 3D plot to visualize the camera frames.
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+
+            # Define origins and colors for each axis
+            origin = [0, 0, 0]
+            colors = ['r', 'g', 'b']
+
+            # Plot the original (mode) coordinate frame with solid lines
+            for i, color in enumerate(colors):
+                ax.quiver(origin[0], origin[1], origin[2],
+                        mode[0, i], mode[1, i], mode[2, i],
+                        color=color, arrow_length_ratio=0.1, label=f"Original axis {i+1}")
+
+            # Plot the noisy (noisy_orientation) coordinate frame with dashed lines
+            for i, color in enumerate(colors):
+                ax.quiver(origin[0], origin[1], origin[2],
+                        noisy_orientation[0, i], noisy_orientation[1, i], noisy_orientation[2, i],
+                        color=color, linestyle='dashed', arrow_length_ratio=0.1, label=f"Noisy axis {i+1}")
+
+            ax.set_xlim([-1, 1])
+            ax.set_ylim([-1, 1])
+            ax.set_zlim([-1, 1])
+            ax.set_xlabel("X")
+            ax.set_ylabel("Y")
+            ax.set_zlabel("Z")
+            ax.set_title("Original (solid) vs Noisy (dashed) Rotation Frames")
+            ax.legend()
+            plt.show()
     return noisy_agents
 
 def generate_measurement_noise_perturbation(trans_std=0.1, rot_std=0.05):
@@ -223,9 +343,10 @@ def generate_measurement_noise_perturbation(trans_std=0.1, rot_std=0.05):
 # Create Noisy Copies and Measurement Edges for Noisy Data
 # =============================================================================
 noisy_agent_trajectories = add_cumulative_drift_to_agents(agent_trajectories, drift_std=0.05, alpha=0.9)
+noisy_agent_trajectories = add_orientation_langevin_noise_to_agents(noisy_agent_trajectories, kappa=50.0)
 
 # =============================================================================
-# Place Noisy Objects in the Scene ("Hydra Frame")
+# Place Noisy Objects in the Scene, Hydra Data ("Hydra Frame")
 # =============================================================================
 noisy_objects_data = []
 
@@ -234,7 +355,7 @@ for edge in gt_measurement_edges:
     grouped_edges[edge["object_id"]].append(edge)
 
 # For each unique object, select the middle edge and compute the relative transform.
-relative_transforms = {}
+measurement_edges = []
 for obj_id, edges in grouped_edges.items():
     mid_index = len(edges) // 2
     mid_edge = edges[mid_index]
@@ -249,15 +370,62 @@ for obj_id, edges in grouped_edges.items():
     noisy_object_centroid = noisy_agent["position"] + (obj["centroid"] - agent["position"])
     original_to_noisy = noisy_object_centroid - obj["centroid"]
 
+    def add_noise_to_point_cloud(pcd, noise_std=0.005):
+        points = np.asarray(pcd.points)
+        noise = np.random.normal(0, noise_std, points.shape)
+        noisy_points = points + noise
+        pcd.points = o3d.utility.Vector3dVector(noisy_points)
+        return pcd
+
     pcd_copy = copy.deepcopy(obj["pcd"])
+    points = np.asarray(pcd_copy.points)
+    centroid = np.mean(points, axis=0)
+    # Slice the point cloud: keep points with x-coordinate less than the centroid's x (one half)
+    mask = points[:, 0] < centroid[0]
+    filtered_points = points[mask]
+    pcd_copy.points = o3d.utility.Vector3dVector(filtered_points)
     shifted_pcd = pcd_copy.translate(original_to_noisy)
+    noisy_pcd = add_noise_to_point_cloud(shifted_pcd, noise_std=0.01)
+    new_centroid = np.mean(np.asarray(noisy_pcd.points), axis=0)
+
+    # Convert the original agent orientation from mid_edge to a gtsam.Rot3.
+    R_agent_orig = gtsam.Rot3(mid_edge["agent_orientation_matrix"])
+    R_agent_noisy = gtsam.Rot3(noisy_agent["orientation_matrix"])
+
+    # Compute the relative rotation between the noisy and original agent orientations.
+    R_relative = R_agent_noisy.compose(R_agent_orig.inverse())
+
+    # Convert the mid_edge object orientation into a gtsam.Rot3.
+    R_obj_orig = gtsam.Rot3.Quaternion(
+        mid_edge["object_orientation"].w,
+        mid_edge["object_orientation"].x,
+        mid_edge["object_orientation"].y,
+        mid_edge["object_orientation"].z)
+    
+    # Apply the relative rotation to the object orientation.
+    R_obj_noisy = R_relative.compose(R_obj_orig).matrix()
+
+    # Translate the bounding box if available.
+    translated_bbox = {}
+    if obj["bounding_box"] is not None:
+        translated_bbox["pos"] = bbox["pos"] + original_to_noisy
+        translated_bbox["min"] = bbox["min"] + original_to_noisy
+        translated_bbox["max"] = bbox["max"] + original_to_noisy
 
     noisy_objects_data.append({
         "id": obj["id"],
-        "centroid": noisy_object_centroid,
-        # "orientation": obj["orientation"],
-        # "bounding_box": obj["bounding_box"],
-        "pcd": shifted_pcd
+        "centroid": new_centroid,
+        "orientation": R_obj_noisy,
+        "bounding_box": translated_bbox,
+        "pcd": noisy_pcd,
+    })
+
+    measurement_edges.append({
+        "object_id": obj["id"],
+        "agent_id": noisy_agent["id"],
+        "distance": mid_edge["distance"],
+        "object_position": new_centroid,
+        "agent_position": noisy_agent["position"],
     })
 
 # =============================================================================
@@ -269,39 +437,93 @@ def register_icp(source_pcd, target_pcd, threshold=0.5, trans_init=np.eye(4)):
         o3d.pipelines.registration.TransformationEstimationPointToPoint())
     return reg
 
-# For each noisy object, find object in the original objects_data with same id (known correspondence) and perform ICP.
+from pycpd import RigidRegistration
+def register_cpd(source_pcd, target_pcd):
+    # Convert Open3D point clouds to numpy arrays.
+    source_points = np.asarray(source_pcd.points)
+    target_points = np.asarray(target_pcd.points)
+    
+    # Create and run CPD registration.
+    reg = RigidRegistration(X=target_points, Y=source_points)
+    TY, (s_reg, R_reg, t_reg) = reg.register()
+    
+    # Build a 4x4 transformation matrix from the CPD registration parameters.
+    T = np.eye(4)
+    T[:3, :3] = s_reg * R_reg  # Apply the scale and rotation.
+    T[:3, 3] = t_reg           # Set the translation.
+    
+    return T, TY
+
+registration_method = "icp"  # Choose between "icp" and "cpd"
+
+# For each noisy object, find the corresponding original object (by id) and perform ICP.
 for noisy_obj in noisy_objects_data:
     # Look up the corresponding original object (prior) by object id.
     original_obj = next((o for o in objects_data if o["id"] == noisy_obj["id"]), None)
     if original_obj is None:
         continue
-    # Both should have a point cloud under the "pcd" key.
     if "pcd" not in original_obj or "pcd" not in noisy_obj:
         continue
 
     source = copy.deepcopy(noisy_obj["pcd"])  # Observed (noisy) point cloud.
     target = original_obj["pcd"]              # Prior point cloud.
-    source.paint_uniform_color([1.0, 0.0, 0.0])  # Color source red.
-    target.paint_uniform_color([0.0, 0.0, 1.0])  # Color target blue.
+
+    source.paint_uniform_color([1.0, 0.0, 0.0])  # Red
+    target.paint_uniform_color([0.0, 0.0, 1.0])  # Blue
+
+    # --- Align centroids first ---
+    # Compute the offset between the centroids.
+    centroid_offset = np.array(original_obj["centroid"]) - np.array(noisy_obj["centroid"])
+    print(f"Aligning centroids for object {noisy_obj['id']} with offset: {centroid_offset}")
+    # Translate the source point cloud by the centroid offset.
+    source.translate(centroid_offset)
 
     # o3d.visualization.draw_geometries([source, target])
     
-    # Set an ICP threshold
-    threshold = 1.0
-    trans_init = np.eye(4)
-    reg_result = register_icp(source, target, threshold, trans_init)
-    
-    print(f"ICP for object {noisy_obj['id']} transformation:")
-    print(reg_result.transformation)
-    
-    # Also store the transformation.
-    noisy_obj["icp_transform"] = reg_result.transformation
+    if registration_method == "icp":
+        # --- Perform ICP ---
+        # Set an ICP threshold (adjust if needed)
+        threshold = 1.0
+        # Use identity since we already aligned the centroids.
+        trans_init = np.eye(4)
+        reg_result = register_icp(source, target, threshold, trans_init)
 
-    # Apply the transformation to the noisy object point cloud.
-    source.transform(reg_result.transformation)
+        print(f"ICP for object {noisy_obj['id']} transformation:")
+        print(reg_result.transformation)
+
+        # Store the transformation.
+        noisy_obj["registration_transform"] = reg_result.transformation
+
+        # Apply the transformation to the source point cloud.
+        source.transform(reg_result.transformation)
+
+    elif registration_method == "cpd":
+        # --- Perform CPD ---
+        T, TY = register_cpd(source, target)
+        print(f"CPD for object {noisy_obj['id']} transformation:")
+        print(T)
+
+        # Store the transformation.
+        noisy_obj["registration_transform"] = T
+
+        # Apply the transformation to the source point cloud.
+        source.transform(T)
 
     # Visualize the aligned point clouds.
-    o3d.visualization.draw_geometries([source, target])
+    # o3d.visualization.draw_geometries([source, target])
+
+    # Find centroid pose difference between original and noisy object after alignment
+    source_centroid = np.mean(np.asarray(source.points), axis=0)
+    target_centroid = np.mean(np.asarray(target.points), axis=0)
+    centroid_offset = target_centroid - source_centroid
+
+    # Construct measurement edge
+    # There is only one measurement edge per object
+    measurement_edge = next((e for e in measurement_edges if e["object_id"] == noisy_obj["id"]), None)
+    if measurement_edge is not None:
+        measurement_edge["centroid_offset"] = centroid_offset
+        measurement_edge["agent_to_prior_centroid_translation"] = measurement_edge["object_position"] - measurement_edge["agent_position"] + centroid_offset
+
 
 # =============================================================================
 # Build a GTSAM Factor Graph
@@ -354,10 +576,10 @@ for i in range(n_agents - 1):
 
 # Add relative pose factors from agents to landmarks.
 relative_noise = noiseModel.Diagonal.Sigmas(np.array([0.1]*6))
-for edge in gt_measurement_edges:
-    agent_index = next((i for i, a in enumerate(agent_trajectories) if a["id"] == edge["agent_id"]), None)
+for edge in measurement_edges:
+    agent_index = next((i for i, a in enumerate(noisy_agent_trajectories) if a["id"] == edge["agent_id"]), None)
     # Find the corresponding landmark in the noisy objects.
-    landmark_index = next((j for j, o in enumerate(objects_data) if o["id"] == edge["object_id"]), None)
+    landmark_index = next((j for j, o in enumerate(noisy_objects_data) if o["id"] == edge["object_id"]), None)
     if agent_index is None or landmark_index is None:
         continue
     key_agent = symbol('x', agent_index)
@@ -376,19 +598,19 @@ for edge in gt_measurement_edges:
     # Construct Pose3 for the landmark.
     q_o = object["orientation"]
     landmark_pose = Pose3(Rot3.Quaternion(q_o.w, q_o.x, q_o.y, q_o.z), 
-                                        Point3(object["centroid"][0],
-                                               object["centroid"][1],
-                                               object["centroid"][2]))
+                                        Point3(object["centroid"][0] + edge["centroid_offset"][0],
+                                               object["centroid"][1] + edge["centroid_offset"][1],
+                                               object["centroid"][2] + edge["centroid_offset"][2]))
     # Compute the relative measurement: T_agent^{-1} * T_landmark.
     relative_measurement = agent_pose.between(landmark_pose)
 
     # Add noise to the relative measurement.
-    noise_pose = generate_measurement_noise_perturbation(trans_std=0.01, rot_std=0.02)
-    noisy_relative_measurement = relative_measurement.compose(noise_pose)
+    # noise_pose = generate_measurement_noise_perturbation(trans_std=0.01, rot_std=0.02)
+    # noisy_relative_measurement = relative_measurement.compose(noise_pose)
 
     # Add the factor to the graph.
-    graph.add(gtsam.BetweenFactorPose3(key_agent, key_landmark, noisy_relative_measurement, relative_noise))
-    # graph.add(gtsam.BetweenFactorPose3(key_agent, key_landmark, relative_measurement, relative_noise))
+    # graph.add(gtsam.BetweenFactorPose3(key_agent, key_landmark, noisy_relative_measurement, relative_noise))
+    graph.add(gtsam.BetweenFactorPose3(key_agent, key_landmark, relative_measurement, relative_noise))
 
 # Add prior factors for landmarks using the original objects_data.
 prior_noise = noiseModel.Isotropic.Sigma(6, 0.1)  # 6-dim noise.
@@ -447,13 +669,19 @@ ax.scatter(object_centroid_x, object_centroid_y, object_centroid_z, marker='s', 
 ax.scatter(noisy_object_centroid_x, noisy_object_centroid_y, noisy_object_centroid_z, marker='s', color='lime', s=80, label='Noisy Object Centroid')
 
 # Plot original measurement edges as purple dashed lines.
-for edge in gt_measurement_edges:
+for edge in measurement_edges:
     p_obj = edge["object_position"]
     p_agent = edge["agent_position"]
     ax.plot([p_obj[0], p_agent[0]],
             [p_obj[1], p_agent[1]],
             [p_obj[2], p_agent[2]],
             color='purple', linestyle='--', linewidth=1)
+    # Line from agent to prior centroid (as if observed pcd was whole)
+    p_prior = p_agent + edge["agent_to_prior_centroid_translation"]
+    ax.plot([p_prior[0], p_agent[0]],
+            [p_prior[1], p_agent[1]],
+            [p_prior[2], p_agent[2]],
+            color='red', linestyle='--', linewidth=1)
 
 # Plot noisy agent positions (cyan) from cumulative drift.
 noisy_agent_x = [a["position"][0] for a in noisy_agent_trajectories if a["position"] is not None]
@@ -466,12 +694,8 @@ for obj in objects_data:
     bb = obj.get("bounding_box", None)
     if bb is not None:
         try:
-            if isinstance(bb, dict):
-                bb_min = np.array(bb["pos"]) - np.array(bb["dim"]) / 2
-                bb_max = np.array(bb["pos"]) + np.array(bb["dim"]) / 2
-            else:
-                bb_min = np.array(bb.min).flatten()
-                bb_max = np.array(bb.max).flatten()
+            bb_min = bb["min"]
+            bb_max = bb["max"]
             if bb_min.size < 3 or bb_max.size < 3:
                 continue
             x_min, y_min, z_min = bb_min[:3]
@@ -495,6 +719,40 @@ for obj in objects_data:
                 [vertices[3], vertices[0], vertices[4], vertices[7]]
             ]
             poly3d = Poly3DCollection(faces, edgecolors='green', facecolors=(0, 0, 0, 0), linewidths=1)
+            ax.add_collection3d(poly3d)
+        except Exception as e:
+            print("Failed to add bounding box:", e)
+
+# Draw bounding boxes for noisy objects
+for obj in noisy_objects_data:
+    bb = obj.get("bounding_box", None)
+    if bb is not None:
+        try:
+            bb_min = bb["min"]
+            bb_max = bb["max"]
+            if bb_min.size < 3 or bb_max.size < 3:
+                continue
+            x_min, y_min, z_min = bb_min[:3]
+            x_max, y_max, z_max = bb_max[:3]
+            vertices = np.array([
+                [x_min, y_min, z_min],
+                [x_max, y_min, z_min],
+                [x_max, y_max, z_min],
+                [x_min, y_max, z_min],
+                [x_min, y_min, z_max],
+                [x_max, y_min, z_max],
+                [x_max, y_max, z_max],
+                [x_min, y_max, z_max]
+            ])
+            faces = [
+                [vertices[0], vertices[1], vertices[2], vertices[3]],
+                [vertices[4], vertices[5], vertices[6], vertices[7]],
+                [vertices[0], vertices[1], vertices[5], vertices[4]],
+                [vertices[2], vertices[3], vertices[7], vertices[6]],
+                [vertices[1], vertices[2], vertices[6], vertices[5]],
+                [vertices[3], vertices[0], vertices[4], vertices[7]]
+            ]
+            poly3d = Poly3DCollection(faces, edgecolors='orange', facecolors=(0, 0, 0, 0), linewidths=1)
             ax.add_collection3d(poly3d)
         except Exception as e:
             print("Failed to add bounding box:", e)
@@ -537,6 +795,81 @@ ax.grid(True)
 plt.show()
 
 # =======================================================================
+# Additional Plot: Trajectories with Orientation at Agent Points
+# =======================================================================
+
+fig2 = plt.figure(figsize=(10, 8))
+ax2 = fig2.add_subplot(111, projection='3d')
+
+# Helper function: Given a quaternion (assumed to be an object with attributes w, x, y, z), return its rotation matrix.
+def quaternion_to_matrix(q):
+    return gtsam.Rot3.Quaternion(q.w, q.x, q.y, q.z).matrix()
+
+# Define a scale factor for the orientation arrows.
+arrow_scale = 0.5
+
+# Sort agents by timestamp (for continuous trajectory plotting)
+sorted_orig = sorted(agent_trajectories, key=lambda a: a["timestamp"])
+sorted_noisy = sorted(noisy_agent_trajectories, key=lambda a: a["timestamp"])
+
+# Extract trajectory coordinates.
+orig_traj = np.array([agent["position"] for agent in sorted_orig if agent["position"] is not None])
+noisy_traj = np.array([agent["position"] for agent in sorted_noisy if agent["position"] is not None])
+
+# Plot trajectories as lines.
+ax2.plot(orig_traj[:, 0], orig_traj[:, 1], orig_traj[:, 2],
+         marker='o', color='red', label='Original Agent Trajectory')
+ax2.plot(noisy_traj[:, 0], noisy_traj[:, 1], noisy_traj[:, 2],
+         marker='o', color='cyan', label='Noisy Agent Trajectory')
+
+# For each original agent, draw a quiver for the orientation.
+for agent in sorted_orig:
+    pos = agent["position"]
+    if pos is not None:
+        # Convert quaternion to rotation matrix and extract the forward (x-axis) direction.
+        R = quaternion_to_matrix(agent["orientation"])
+        forward = R[:, 0]  # first column
+        ax2.quiver(pos[0], pos[1], pos[2],
+                   forward[0], forward[1], forward[2],
+                   length=arrow_scale, color='red', normalize=True)
+
+# For each noisy agent, draw a quiver arrow.
+for agent in sorted_noisy:
+    pos = agent["position"]
+    if pos is not None:
+        # Use the noisy orientation matrix if available; otherwise, convert from the quaternion.
+        R = agent.get("orientation_matrix")
+        if R is None:
+            R = quaternion_to_matrix(agent["orientation"])
+        forward = R[:, 0]  # forward direction
+        ax2.quiver(pos[0], pos[1], pos[2],
+                   forward[0], forward[1], forward[2],
+                   length=arrow_scale, color='cyan', normalize=True)
+
+# Set equal axis scaling.
+x_limits = ax2.get_xlim3d()
+y_limits = ax2.get_ylim3d()
+z_limits = ax2.get_zlim3d()
+x_range = abs(x_limits[1] - x_limits[0])
+y_range = abs(y_limits[1] - y_limits[0])
+z_range = abs(z_limits[1] - z_limits[0])
+max_range = max(x_range, y_range, z_range)
+x_mid = np.mean(x_limits)
+y_mid = np.mean(y_limits)
+z_mid = np.mean(z_limits)
+ax2.set_xlim3d([x_mid - max_range/2, x_mid + max_range/2])
+ax2.set_ylim3d([y_mid - max_range/2, y_mid + max_range/2])
+ax2.set_zlim3d([z_mid - max_range/2, z_mid + max_range/2])
+
+ax2.set_xlabel("X")
+ax2.set_ylabel("Y")
+ax2.set_zlabel("Z")
+ax2.set_title("Original and Noisy Agent Trajectories with Orientations")
+ax2.legend()
+ax2.grid(True)
+plt.show()
+
+# =======================================================================
 # Plot the optimized results
 # =======================================================================
 
@@ -567,12 +900,8 @@ for obj in objects_data:
     bb = obj.get("bounding_box", None)
     if bb is not None:
         try:
-            if isinstance(bb, dict):
-                bb_min = np.array(bb["pos"]) - np.array(bb["dim"]) / 2
-                bb_max = np.array(bb["pos"]) + np.array(bb["dim"]) / 2
-            else:
-                bb_min = np.array(bb.min).flatten()
-                bb_max = np.array(bb.max).flatten()
+            bb_min = bb["min"]
+            bb_max = bb["max"]
             if bb_min.size < 3 or bb_max.size < 3:
                 continue
             x_min, y_min, z_min = bb_min[:3]
