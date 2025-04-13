@@ -41,9 +41,7 @@ agent_trajectories = []
 for agent in agent_layer.nodes:
     timestamp = agent.timestamp
     pos = agent.attributes.position if hasattr(agent.attributes, "position") else None
-    R_body = agent.attributes.world_R_body
-    if pos is not None:
-        pos = np.array(pos).flatten()
+    R_body = agent.attributes.world_R_body if hasattr(agent.attributes, "world_R_body") else None
     agent_trajectories.append({
         "id": agent.id,
         "timestamp": timestamp,
@@ -408,9 +406,9 @@ for obj_id, edges in grouped_edges.items():
     # Translate the bounding box if available.
     translated_bbox = {}
     if obj["bounding_box"] is not None:
-        translated_bbox["pos"] = bbox["pos"] + original_to_noisy
-        translated_bbox["min"] = bbox["min"] + original_to_noisy
-        translated_bbox["max"] = bbox["max"] + original_to_noisy
+        translated_bbox["pos"] = obj["bounding_box"]["pos"] + original_to_noisy
+        translated_bbox["min"] = obj["bounding_box"]["min"] + original_to_noisy
+        translated_bbox["max"] = obj["bounding_box"]["max"] + original_to_noisy
 
     noisy_objects_data.append({
         "id": obj["id"],
@@ -758,18 +756,22 @@ for obj in noisy_objects_data:
             print("Failed to add bounding box:", e)
 
 # Overlay the prior point clouds
+pcd_label_flag = False
 for obj in objects_data:
     if "pcd" in obj and obj["pcd"] is not None:
         pcd_points = np.asarray(obj["pcd"].points)
         ax.scatter(pcd_points[:,0], pcd_points[:,1], pcd_points[:,2],
-                   s=2, color='black', alpha=0.5, label='Prior Point Cloud')
-
+                   s=2, color='black', alpha=0.5, label='Prior Point Cloud' if not pcd_label_flag else "")
+        pcd_label_flag = True
+        
+pcd_label_flag = False
 # Overlay the noisy point clouds
 for obj in noisy_objects_data:
     if "pcd" in obj and obj["pcd"] is not None:
         pcd_points = np.asarray(obj["pcd"].points)
         ax.scatter(pcd_points[:,0], pcd_points[:,1], pcd_points[:,2],
-                   s=2, color='magenta', alpha=0.5, label='Observed Point Cloud')
+                   s=2, color='magenta', alpha=0.5, label='Observed Point Cloud' if not pcd_label_flag else "")
+        pcd_label_flag = True
 
 # Set equal axis scaling.
 x_limits = ax.get_xlim3d()
@@ -894,8 +896,7 @@ opt_landmark_y = [point[1] for point in optimized_landmark_positions]
 opt_landmark_z = [point[2] for point in optimized_landmark_positions]
 ax.scatter(opt_landmark_x, opt_landmark_y, opt_landmark_z, marker='s', color='yellow', s=80, label='Optimized Landmarks')
 
-# Add bounding boxes for original objects
-# Draw bounding boxes for original objects (optional)
+# Draw bounding boxes for original objects
 for obj in objects_data:
     bb = obj.get("bounding_box", None)
     if bb is not None:
